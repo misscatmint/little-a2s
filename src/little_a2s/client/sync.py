@@ -1,9 +1,10 @@
 import logging
 import socket
+from collections import OrderedDict
 from collections.abc import Callable
 from typing import Self
 
-from little_a2s.client.constants import DEFAULT_TIMEOUT
+from little_a2s.client.constants import DEFAULT_TIMEOUT, MAX_PROTOCOLS
 from little_a2s.client.types import Address, ClientEventT, filter_type, first
 from little_a2s.errors import ChallengeError
 from little_a2s.events import (
@@ -68,8 +69,18 @@ class A2S:
     """
 
     buffer_size = 32768  # probably overkill?
+    max_protocols = MAX_PROTOCOLS
+    """The number of addresses to keep protocol state for, such as challenges.
+
+    Past this, the least recently used addresses are forgotten, and their
+    next request starts with a new challenge.
+
+    .. versionadded:: 0.8.0
+
+    """
+
     _remote_addr: Address | None = None
-    _protocols: dict[Address, A2SClientProtocol]
+    _protocols: OrderedDict[Address, A2SClientProtocol]
 
     def __init__(self, sock: socket.socket) -> None:
         if sock.type != socket.SOCK_DGRAM:
@@ -77,7 +88,7 @@ class A2S:
 
         self._sock = sock
         self._remote_addr = None  # FIXME: can this be introspected from sock?
-        self._protocols = {}
+        self._protocols = OrderedDict()
 
     # Connection methods
 
@@ -273,10 +284,13 @@ class A2S:
         # NOTE: not thread-safe!
         proto = self._protocols.get(addr)
         if proto is not None:
+            self._protocols.move_to_end(addr)
             return proto
 
         proto = self._create_protocol()
         self._protocols[addr] = proto
+        if len(self._protocols) > self.max_protocols:
+            self._protocols.popitem(last=False)
         return proto
 
     def _create_protocol(self) -> A2SClientProtocol:

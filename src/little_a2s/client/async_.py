@@ -3,11 +3,13 @@ from __future__ import annotations
 import asyncio
 import logging
 import socket
+from collections import OrderedDict
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from functools import partial
 from typing import Self, cast
 
+from little_a2s.client.constants import MAX_PROTOCOLS
 from little_a2s.client.types import Address, ClientEventT
 from little_a2s.errors import ChallengeError
 from little_a2s.events import (
@@ -58,9 +60,20 @@ class AsyncA2S(asyncio.DatagramProtocol):
 
     """
 
+    max_protocols = MAX_PROTOCOLS
+    """The number of addresses to keep protocol state for, such as challenges.
+
+    Past this, the least recently used addresses are forgotten, and their
+    next request starts with a new challenge. Addresses with pending
+    requests are always kept.
+
+    .. versionadded:: 0.8.0
+
+    """
+
     _remote_addr: Address | None = None
     _transport: asyncio.DatagramTransport | None = None
-    _protocols: dict[Address, A2SClientProtocol]
+    _protocols: OrderedDict[Address, A2SClientProtocol]
     _requests: dict[
         tuple[Address, type[ClientEvent]],
         asyncio.Future[ClientEvent | None],
@@ -78,7 +91,7 @@ class AsyncA2S(asyncio.DatagramProtocol):
         self._reset()
 
     def _reset(self) -> None:
-        self._protocols = {}
+        self._protocols = OrderedDict()
         self._requests = {}
 
         loop = asyncio.get_running_loop()
@@ -303,11 +316,22 @@ class AsyncA2S(asyncio.DatagramProtocol):
         """
         proto = self._protocols.get(addr)
         if proto is not None:
+            self._protocols.move_to_end(addr)
             return proto
 
         proto = self._create_protocol()
         self._protocols[addr] = proto
+        self._forget_protocols()
         return proto
+
+    def _forget_protocols(self) -> None:
+        # Keep the newest address and any with pending requests so replies arrive.
+        pending = {addr for addr, _ in self._requests}
+        for addr in list(self._protocols)[:-1]:
+            if len(self._protocols) <= self.max_protocols:
+                break
+            if addr not in pending:
+                del self._protocols[addr]
 
     def _create_protocol(self) -> A2SClientProtocol:
         """Create the A2S protocol to manage state.
