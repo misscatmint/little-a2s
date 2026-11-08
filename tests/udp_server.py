@@ -1,7 +1,10 @@
 """Real UDP servers on 127.0.0.1 for testing the clients."""
 
 import asyncio
-from collections.abc import Container
+import socket
+import threading
+from collections.abc import Container, Generator
+from contextlib import contextmanager
 
 from little_a2s.client.types import Address
 from tests.constants import A2S_INFO_COUNTERSTRIKE_SOURCE, A2S_PLAYER, S2C_CHALLENGE
@@ -68,3 +71,53 @@ async def start(server: AsyncServer) -> tuple[str, int]:
         local_addr=("127.0.0.1", 0),
     )
     return transport.get_extra_info("sockname")
+
+
+@contextmanager
+def sync_server(
+    *,
+    drop: Container[int] = frozenset(),
+    delay: float = 0,
+    answer_once: bool = False,
+    always_challenge: bool = False,
+) -> Generator[tuple[tuple[str, int], list[bytes]], None, None]:
+    """Run a UDP server in a thread, yielding its address and received requests.
+
+    This takes the same options as :class:`AsyncServer`.
+
+    """
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.bind(("127.0.0.1", 0))
+    sock.settimeout(0.05)
+    requests: list[bytes] = []
+    timers: list[threading.Timer] = []
+    stop = threading.Event()
+
+    def serve() -> None:
+        while not stop.is_set():
+            try:
+                data, addr = sock.recvfrom(4096)
+            except TimeoutError:
+                continue
+            index = len(requests)
+            repeated = data in requests
+            requests.append(data)
+            if index in drop or (answer_once and repeated):
+                continue
+
+            reply = reply_to(data, always_challenge=always_challenge)
+            timer = threading.Timer(delay, sock.sendto, (reply, addr))
+            timers.append(timer)
+            timer.start()
+
+    thread = threading.Thread(target=serve)
+    thread.start()
+    try:
+        yield sock.getsockname(), requests
+    finally:
+        stop.set()
+        thread.join()
+        for timer in timers:
+            timer.cancel()
+            timer.join()
+        sock.close()

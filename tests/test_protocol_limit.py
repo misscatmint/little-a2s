@@ -1,12 +1,7 @@
 import asyncio
-import socket
-import threading
-from collections.abc import Generator
-from contextlib import contextmanager
 
 from little_a2s import A2S, AsyncA2S
-from little_a2s.client.types import Address
-from tests.udp_server import AsyncServer, reply_to, start
+from tests.udp_server import AsyncServer, start, sync_server
 
 OUTER_TIMEOUT = 2
 
@@ -46,40 +41,12 @@ def test_async_keeps_address_with_pending_request() -> None:
     asyncio.run(main())
 
 
-@contextmanager
-def sync_server() -> Generator[tuple[Address, list[bytes]], None, None]:
-    """Run a real UDP server in a thread, yielding its address and requests."""
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.bind(("127.0.0.1", 0))
-    sock.settimeout(0.1)
-    requests: list[bytes] = []
-    stop = threading.Event()
-
-    def serve() -> None:
-        while not stop.is_set():
-            try:
-                data, addr = sock.recvfrom(4096)
-            except TimeoutError:
-                continue
-            requests.append(data)
-            sock.sendto(reply_to(data), addr)
-
-    thread = threading.Thread(target=serve)
-    thread.start()
-    try:
-        yield sock.getsockname(), requests
-    finally:
-        stop.set()
-        thread.join()
-        sock.close()
-
-
 def test_sync_forgets_least_recently_used_address() -> None:
     with (
         sync_server() as (a, a_requests),
         sync_server() as (b, b_requests),
         sync_server() as (c, c_requests),
-        A2S.from_ipv4(timeout=OUTER_TIMEOUT) as client,
+        A2S.from_ipv4(OUTER_TIMEOUT, resend_interval=None) as client,
     ):
         client.max_protocols = 2
         for addr in (a, b, a, c, a, b):
