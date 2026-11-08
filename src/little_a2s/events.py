@@ -328,6 +328,14 @@ class ClientEventPlayers(ClientEvent, Sequence[Player]):
         Added support for the sequence protocol to interact with
         the underlying list of players.
 
+    .. versionchanged:: 0.8.0
+
+        Stop at the end of the data or at an entry that is all zeros, instead
+        of raising :exc:`PayloadError`, when a server cuts a long list short
+        or pads the rest of the packet with zeros. The list can then hold
+        fewer players than the server is running, so use
+        :class:`ClientEventInfo` for an accurate count.
+
     """
 
     players: list[Player]
@@ -338,10 +346,16 @@ class ClientEventPlayers(ClientEvent, Sequence[Player]):
         """Parse this class from a reader."""
         players = []
         for _ in range(reader.read_byte()):
-            index = reader.read_byte()
-            name = reader.read_null_utf8()
-            score = reader.read_long()
-            duration = reader.read_float()
+            # Servers with long lists can stop early and pad the rest with zeros.
+            try:
+                index = reader.read_byte()
+                name = reader.read_null_utf8()
+                score = reader.read_long()
+                duration = reader.read_float()
+            except EOFError:
+                break
+            if not (index or name or score or duration):
+                break
             # Extra data will be here for The Ship
             player = Player(index=index, name=name, score=score, duration=duration)
             players.append(player)

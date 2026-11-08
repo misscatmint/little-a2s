@@ -24,6 +24,7 @@ from tests.constants import (
     A2S_PLAYER,
     A2S_PLAYER_EMPTY,
     A2S_PLAYER_MALFORMED_UTF8,
+    A2S_PLAYER_ZERO_PADDED,
     A2S_RULES_ARMA3,
     A2S_RULES_PROJECT_ZOMBOID,
     S2C_CHALLENGE,
@@ -180,6 +181,19 @@ def test_a2s_player() -> None:
 def test_a2s_player_empty() -> None:
     players = ClientEventPlayers.from_reader(Reader(A2S_PLAYER_EMPTY[5:]))
     assert players == ClientEventPlayers(players=[])
+
+
+def test_a2s_player_zero_padded() -> None:
+    players = ClientEventPlayers.from_reader(Reader(A2S_PLAYER_ZERO_PADDED[5:]))
+    assert len(players) == 89
+    assert players[0] == Player(index=0, name="playe", score=0, duration=58906.79296875)
+    assert players[-1] == Player(index=0, name="player", score=0, duration=0.0)
+
+
+def test_a2s_player_fewer_than_count() -> None:
+    data = b"\x03" + A2S_PLAYER[6:]
+    players = ClientEventPlayers.from_reader(Reader(data))
+    assert players == ClientEventPlayers.from_reader(Reader(A2S_PLAYER[5:]))
 
 
 def test_a2s_player_malformed_utf8() -> None:
