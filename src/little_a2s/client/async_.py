@@ -7,10 +7,15 @@ from collections import OrderedDict
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from functools import partial
+from types import EllipsisType
 from typing import Self, cast
 
-from little_a2s.client.constants import MAX_PROTOCOLS
-from little_a2s.client.types import Address, ClientEventT
+from little_a2s.client.constants import (
+    DEFAULT_RESEND_INTERVAL,
+    DEFAULT_TIMEOUT,
+    MAX_PROTOCOLS,
+)
+from little_a2s.client.types import Address, ClientEventT, positive_or_none
 from little_a2s.errors import ChallengeError
 from little_a2s.events import (
     ClientEvent,
@@ -48,6 +53,16 @@ class AsyncA2S(asyncio.DatagramProtocol):
         The function to call and await to create a datagram transport
         and return the remote address, if any.
         See also :meth:`from_addr()`, :meth:`from_ipv4()`, and :meth:`from_ipv6()`.
+    :param timeout:
+        The number of seconds each request can take, including any
+        challenges and resends, before raising :exc:`TimeoutError`,
+        or None to wait indefinitely.
+    :param resend_interval:
+        The number of seconds to wait for a response before sending
+        the request again, or None to send each request only once.
+        While resending, a server that keeps sending the same challenge
+        does not raise :exc:`ChallengeError`, so the request times out instead.
+    :raises ValueError: timeout or resend_interval is not positive.
 
     .. versionadded:: 0.5.0
 
@@ -57,6 +72,13 @@ class AsyncA2S(asyncio.DatagramProtocol):
 
         Concurrent, pending requests to one address can raise the same PayloadError
         if any received packet is malformed.
+
+    .. versionchanged:: 0.8.0
+
+        Added the ``timeout`` and ``resend_interval`` parameters, and a
+        ``timeout`` parameter to :meth:`info()`, :meth:`players()` and
+        :meth:`rules()`. Requests now time out after 3 seconds and resend
+        every 0.5 seconds by default.
 
     """
 
@@ -83,8 +105,13 @@ class AsyncA2S(asyncio.DatagramProtocol):
     def __init__(
         self,
         connector: Callable[[Self], Awaitable[Address | None]],
+        *,
+        timeout: float | None = DEFAULT_TIMEOUT,
+        resend_interval: float | None = DEFAULT_RESEND_INTERVAL,
     ) -> None:
         self.connector = connector
+        self._timeout = positive_or_none("timeout", timeout)
+        self._resend_interval = positive_or_none("resend_interval", resend_interval)
 
         self._lock = asyncio.Lock()
         self._request_cond = asyncio.Condition(self._lock)
@@ -153,6 +180,8 @@ class AsyncA2S(asyncio.DatagramProtocol):
         port: int,
         *,
         prefer_ipv4: bool = True,
+        timeout: float | None = DEFAULT_TIMEOUT,
+        resend_interval: float | None = DEFAULT_RESEND_INTERVAL,
     ) -> Self:
         """Resolve the given host and create an A2S query.
 
@@ -166,6 +195,8 @@ class AsyncA2S(asyncio.DatagramProtocol):
         :param host: The IPv4 address, IPv6 address, or domain name to query.
         :param port: The port to query.
         :param prefer_ipv4: If True, prefer to resolve hostnames to IPv4 addresses.
+        :param timeout: The request timeout. See :class:`AsyncA2S`.
+        :param resend_interval: The resend interval. See :class:`AsyncA2S`.
 
         """
         connector = partial(
@@ -174,7 +205,7 @@ class AsyncA2S(asyncio.DatagramProtocol):
             port=port,
             prefer_ipv4=prefer_ipv4,
         )
-        return cls(connector)
+        return cls(connector, timeout=timeout, resend_interval=resend_interval)
 
     async def _connect_from_addr(
         self,
@@ -211,7 +242,12 @@ class AsyncA2S(asyncio.DatagramProtocol):
         return addr
 
     @classmethod
-    def from_ipv4(cls) -> Self:
+    def from_ipv4(
+        cls,
+        *,
+        timeout: float | None = DEFAULT_TIMEOUT,
+        resend_interval: float | None = DEFAULT_RESEND_INTERVAL,
+    ) -> Self:
         """Create an A2S query with a UDP IPv4 socket not connected to any address.
 
         This allows you to use the same socket with ``addr`` arguments::
@@ -220,12 +256,20 @@ class AsyncA2S(asyncio.DatagramProtocol):
                 info = await a2s.info(("127.0.0.1", 2303))
                 info = await a2s.info(("127.0.0.1", 27015))
 
+        :param timeout: The request timeout. See :class:`AsyncA2S`.
+        :param resend_interval: The resend interval. See :class:`AsyncA2S`.
+
         """
         connector = partial(cls._connect_from_family, family=socket.AF_INET)
-        return cls(connector)
+        return cls(connector, timeout=timeout, resend_interval=resend_interval)
 
     @classmethod
-    def from_ipv6(cls) -> Self:
+    def from_ipv6(
+        cls,
+        *,
+        timeout: float | None = DEFAULT_TIMEOUT,
+        resend_interval: float | None = DEFAULT_RESEND_INTERVAL,
+    ) -> Self:
         """Create an A2S query with a UDP IPv6 socket not connected to any address.
 
         This allows you to use the same socket with ``addr`` arguments::
@@ -234,9 +278,12 @@ class AsyncA2S(asyncio.DatagramProtocol):
                 info = await a2s.info(("::1", 2303))
                 info = await a2s.info(("::1", 27015))
 
+        :param timeout: The request timeout. See :class:`AsyncA2S`.
+        :param resend_interval: The resend interval. See :class:`AsyncA2S`.
+
         """
         connector = partial(cls._connect_from_family, family=socket.AF_INET6)
-        return cls(connector)
+        return cls(connector, timeout=timeout, resend_interval=resend_interval)
 
     async def _connect_from_family(self, *, family: socket.AddressFamily) -> None:
         loop = asyncio.get_running_loop()
@@ -249,56 +296,86 @@ class AsyncA2S(asyncio.DatagramProtocol):
 
     # Request methods
 
-    async def info(self, addr: Address | None = None) -> ClientEventInfo:
+    async def info(
+        self,
+        addr: Address | None = None,
+        *,
+        timeout: float | None | EllipsisType = ...,
+    ) -> ClientEventInfo:
         """Send an A2S_INFO request and wait for a response.
 
         :param addr:
             The address to send the request to.
             Does not apply if socket is already connected to an address,
             such as from :meth:`from_addr()`.
+        :param timeout:
+            The number of seconds this request can take, or None to wait
+            indefinitely. Zero or less times out right away.
+            Defaults to the client's timeout.
 
         :raises ChallengeError: The server sent too many challenges.
         :raises PayloadError: The server sent a malformed packet.
+        :raises TimeoutError: The request took longer than the timeout.
         :raises TypeError: The addr argument was required or forbidden.
 
         """
         addr = self._get_addr(addr)
         proto = self._get_protocol(addr)
-        return await self._send(ClientEventInfo, addr, proto.info)
+        return await self._send(ClientEventInfo, addr, proto.info, timeout)
 
-    async def players(self, addr: Address | None = None) -> ClientEventPlayers:
+    async def players(
+        self,
+        addr: Address | None = None,
+        *,
+        timeout: float | None | EllipsisType = ...,
+    ) -> ClientEventPlayers:
         """Send an A2S_PLAYER request and wait for a response.
 
         :param addr:
             The address to send the request to.
             Does not apply if socket is already connected to an address,
             such as from :meth:`from_addr()`.
+        :param timeout:
+            The number of seconds this request can take, or None to wait
+            indefinitely. Zero or less times out right away.
+            Defaults to the client's timeout.
 
         :raises ChallengeError: The server sent too many challenges.
         :raises PayloadError: The server sent a malformed packet.
+        :raises TimeoutError: The request took longer than the timeout.
         :raises TypeError: The addr argument was required or forbidden.
 
         """
         addr = self._get_addr(addr)
         proto = self._get_protocol(addr)
-        return await self._send(ClientEventPlayers, addr, proto.players)
+        return await self._send(ClientEventPlayers, addr, proto.players, timeout)
 
-    async def rules(self, addr: Address | None = None) -> ClientEventRules:
+    async def rules(
+        self,
+        addr: Address | None = None,
+        *,
+        timeout: float | None | EllipsisType = ...,
+    ) -> ClientEventRules:
         """Send an A2S_RULES request and wait for a response.
 
         :param addr:
             The address to send the request to.
             Does not apply if socket is already connected to an address,
             such as from :meth:`from_addr()`.
+        :param timeout:
+            The number of seconds this request can take, or None to wait
+            indefinitely. Zero or less times out right away.
+            Defaults to the client's timeout.
 
         :raises ChallengeError: The server sent too many challenges.
         :raises PayloadError: The server sent a malformed packet.
+        :raises TimeoutError: The request took longer than the timeout.
         :raises TypeError: The addr argument was required or forbidden.
 
         """
         addr = self._get_addr(addr)
         proto = self._get_protocol(addr)
-        return await self._send(ClientEventRules, addr, proto.rules)
+        return await self._send(ClientEventRules, addr, proto.rules, timeout)
 
     def _get_addr(self, addr: Address | None) -> Address:
         if self._remote_addr and addr:
@@ -357,6 +434,7 @@ class AsyncA2S(asyncio.DatagramProtocol):
         if proto is None:
             return log.debug("Ignoring unexpected address %r", addr)
 
+        before = proto.challenge
         try:
             proto.receive_datagram(data)
         except Exception as e:  # noqa: BLE001 should be PayloadError, but we'll pass any exception
@@ -378,7 +456,10 @@ class AsyncA2S(asyncio.DatagramProtocol):
 
             fut.set_result(e)
 
-        if challenge is None:
+        # Each resend gets its own challenge back, and only the first is news.
+        if challenge is None or (
+            self._resend_interval is not None and challenge.challenge == before
+        ):
             return
 
         for (fut_addr, _), fut in self._requests.items():
@@ -395,16 +476,26 @@ class AsyncA2S(asyncio.DatagramProtocol):
         t: type[ClientEventT],
         addr: Address,
         payload: Callable[[], ClientPacket],
+        timeout: float | None | EllipsisType,
     ) -> ClientEventT:
         key = (addr, t)
+        limit = self._timeout if isinstance(timeout, EllipsisType) else timeout
 
-        for _ in range(3):
-            async with self._claim_request(key) as fut:
-                self.transport.sendto(bytes(payload()), addr)
-                event = await fut
+        async with asyncio.timeout(limit):
+            for _attempt in range(3):
+                async with self._claim_request(key) as fut:
+                    while True:
+                        self.transport.sendto(bytes(payload()), addr)
+                        # wait_for() would cancel the future and lose a late reply.
+                        done, _pending = await asyncio.wait(
+                            {fut}, timeout=self._resend_interval
+                        )
+                        if done:
+                            break
+                    event = fut.result()
 
-            if event is not None:
-                return event
+                if event is not None:
+                    return event
 
         raise ChallengeError("Server responded with too many challenges")
 
@@ -430,10 +521,15 @@ class AsyncA2S(asyncio.DatagramProtocol):
 class AsyncA2SGoldsource(AsyncA2S):
     """A asynchronous client for A2S Goldsource queries."""
 
-    async def info(self, addr: Address | None = None) -> ClientEventGoldsourceInfo:  # type: ignore
+    async def info(  # type: ignore
+        self,
+        addr: Address | None = None,
+        *,
+        timeout: float | None | EllipsisType = ...,
+    ) -> ClientEventGoldsourceInfo:
         addr = self._get_addr(addr)
         proto = self._get_protocol(addr)
-        return await self._send(ClientEventGoldsourceInfo, addr, proto.info)
+        return await self._send(ClientEventGoldsourceInfo, addr, proto.info, timeout)
 
     def _create_protocol(self) -> A2SGoldsourceClientProtocol:
         return A2SGoldsourceClientProtocol()

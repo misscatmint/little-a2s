@@ -32,6 +32,19 @@ def first(t: type[T] | tuple[type[T], ...], it: Iterable[object], /) -> T | None
     return next(filter_type(t, it), None)
 
 
+def positive_or_none(name: str, value: float | None) -> float | None:
+    """Return the value if it is positive or None.
+
+    :raises ValueError: The value is zero, negative, or NaN.
+
+    .. versionadded:: 0.8.0
+
+    """
+    if value is not None and not value > 0:
+        raise ValueError(f"{name} must be positive or None, got {value!r}")
+    return value
+
+
 def last(t: type[T] | tuple[type[T], ...], it: Iterable[object], /) -> T | None:
     """Return the last element of the given type in an iterable.
 
