@@ -322,7 +322,12 @@ class A2S:
         types = (t, ClientEventChallenge)
 
         for _ in range(3):
-            self._sock.sendto(bytes(payload()), addr)
+            data = bytes(payload())
+            if self._remote_addr:
+                # macOS rejects sendto() with an address on a connected socket.
+                self._sock.send(data)
+            else:
+                self._sock.sendto(data, addr)
             events = list(filter_type(types, self._recv(addr)))
             if not events:
                 # FIXME: not really a timeout, should be a custom exception
