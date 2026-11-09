@@ -237,7 +237,11 @@ class A2SClientProtocol:
         header: MultiAnyHeader,
     ) -> bytes | None:
         response = self._get_response(header)
-        return self._update_response(reader, header, response)
+        payload = self._update_response(reader, header, response)
+        if payload is None:
+            return None
+        # Servers repeat the single-packet header at the start of the first part.
+        return payload.removeprefix(b"\xff\xff\xff\xff")
 
     def _get_response(
         self,

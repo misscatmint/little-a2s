@@ -11,6 +11,8 @@ from tests.constants import (
     A2S_INFO_GOLDSOURCE_COUNTERSTRIKE,
     A2S_INFO_SIN1_MP,
     A2S_PLAYER,
+    A2S_RULES_COUNTERSTRIKE_SOURCE_1,
+    A2S_RULES_COUNTERSTRIKE_SOURCE_2,
     A2S_RULES_PROJECT_ZOMBOID,
     S2C_CHALLENGE,
 )
@@ -48,3 +50,18 @@ def test_protocol_challenge() -> None:
     assert protocol.info().challenge == 584425803
     assert protocol.players().challenge == 584425803
     assert protocol.rules().challenge == 584425803
+
+
+def test_multi_packet_rules() -> None:
+    parts = [A2S_RULES_COUNTERSTRIKE_SOURCE_1, A2S_RULES_COUNTERSTRIKE_SOURCE_2]
+    for ordered in (parts, parts[::-1]):
+        proto = A2SClientProtocol()
+        for data in ordered:
+            proto.receive_datagram(data)
+
+        events = proto.events_received()
+        assert len(events) == 1
+        assert isinstance(events[0], ClientEventRules)
+        assert len(events[0].rules) == 108
+        assert events[0].rules[b"bot_quota"] == b"3"
+        assert events[0].rules[b"sm_noblock"] == b"1"
