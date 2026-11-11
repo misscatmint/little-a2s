@@ -58,7 +58,7 @@ class ExtraInfo:
     keywords: str | None = None
     """Tags that describe the game according to the server."""
     game_id: int | None = None
-    """The server's game ID."""
+    """The server's game ID. Its low 24 bits are the game's Steam Application ID."""
 
     @classmethod
     def from_reader(cls, reader: Reader, flag: int) -> Self:
@@ -185,7 +185,12 @@ class ClientEventInfo(ClientEvent):
     game: str
     """Full name of the game."""
     id: int
-    """Steam Application ID of game."""
+    """Steam Application ID of game.
+
+    This is a 16-bit field, so servers for games with larger IDs send 0 here.
+    Use :attr:`app_id` for the game's actual ID.
+
+    """
     players: int
     """Number of players on the server."""
     max_players: int
@@ -204,6 +209,20 @@ class ClientEventInfo(ClientEvent):
     """Version of the game installed on the server."""
     extra: ExtraInfo | None
     """Extra data included with the response."""
+
+    @property
+    def app_id(self) -> int:
+        """Steam Application ID of game.
+
+        This is the low 24 bits of :attr:`ExtraInfo.game_id` when the server
+        includes it, and :attr:`id` otherwise.
+
+        .. versionadded:: 0.8.0
+
+        """
+        if self.extra is not None and self.extra.game_id is not None:
+            return self.extra.game_id & 0xFFFFFF
+        return self.id
 
     @classmethod
     def from_reader(cls, reader: Reader) -> Self:

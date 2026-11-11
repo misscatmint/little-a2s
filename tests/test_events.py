@@ -129,6 +129,20 @@ def test_a2s_info_arma3() -> None:
     )
 
 
+def test_a2s_info_app_id() -> None:
+    # Games with IDs above 16 bits send 0 as the ID and the real one in the game ID.
+    assert (
+        ClientEventInfo.from_reader(Reader(A2S_INFO_PROJECT_ZOMBOID[5:])).app_id
+        == 108600
+    )
+    assert ClientEventInfo.from_reader(Reader(A2S_INFO_ARMA3[5:])).app_id == 107410
+    # Without a game ID, the 16-bit ID is used.
+    assert (
+        ClientEventInfo.from_reader(Reader(A2S_INFO_COUNTERSTRIKE_SOURCE[5:])).app_id
+        == 240
+    )
+
+
 def test_a2s_info_goldsource() -> None:
     info = ClientEventGoldsourceInfo.from_reader(
         Reader(A2S_INFO_GOLDSOURCE_COUNTERSTRIKE[5:])
